@@ -15,18 +15,19 @@ extern "C" {
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
-#include <NTPClient.h>
+//#include <NTPClient.h>
+#include "EWSNTPClient.h"
 #include <time.h>
 #include <SPIFFS.h>
 #include "FS.h"
 #include <PubSubClient.h>
 
 // Our header
-#include "SensorSample.h"
+#include "sensorSample.h"
 #include "ulp_main.h"
 #include "stdint.h"
 
-#include "bme280.h"
+#include "BME280.h"
 #include "globaldef.h"
 
 
@@ -48,24 +49,44 @@ RTC_DATA_ATTR uint8_t dig[32];  // holds BME280 calibration data
 
 // NTP Synchronization variables
 RTC_DATA_ATTR uint64_t rtcOffset;   // it is the number of rtc ticks from boot to the last ntp synchronization
-RTC_DATA_ATTR long ntpSynchedTime;  // it is the number of seconds since 1970 to the last ntp synchronization
+RTC_DATA_ATTR uint64_t ntpSynchedTime;  // it is the number of mseconds since 1970 to the last ntp synchronization
 
 
 
 
 // RTC functions
 
-char *TimeToString(long timestamp) {
- 
-  struct tm *timeinfo = localtime(&timestamp);
+char timestr[64];
 
-  return asctime(timeinfo);
+// in ms
+char *TimeToString(uint64_t timestamp) {
+  time_t t=timestamp/1000;
+  struct tm *ti = localtime(&t);
+  
+  sprintf(timestr,"%2.2d/%2.2d/%4.4d %2.2d:%2.2d:%2.2d.%3.3d (timestamp %lld)",ti->tm_mday,ti->tm_mon+1,ti->tm_year+1900,ti->tm_hour,ti->tm_min,ti->tm_sec,timestamp%1000,timestamp);
+
+  return timestr;
 }
 
 
-int setUnixtime(int32_t unixtime) {
-  timeval epoch = {unixtime, 0};
+// in ms
+int setUnixtime(int64_t unixtime) {
+  timeval epoch = { (uint32_t) (unixtime/1000), (uint32_t) (unixtime%1000)*1000};  // second parameter is usec
+  
+  //SERDBG("settimeofday sec %lld ms %lld\n",unixtime/1000,unixtime%1000);
+
   return settimeofday((const timeval*)&epoch, 0);
+}
+
+
+
+char *PrintTime() {
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+
+  //SERDBG("gettimeofday sec %d usec %d\n",tv.tv_sec,tv.tv_usec);
+
+  return TimeToString(((uint64_t) tv.tv_sec)*1000+tv.tv_usec/1000);
 }
 
 
@@ -208,7 +229,7 @@ void DisconnectWifi() {
 
 void DoNTPSynch() {
     WiFiUDP wifiUdp;
-    NTPClient timeClient(wifiUdp, NTP_SERVER,0, 60000);
+    EWSNTPClient timeClient(wifiUdp, NTP_SERVER,0, 60000);
 
     SERDBG("Performing NTP query...\n");
     timeClient.begin();
@@ -217,11 +238,13 @@ void DoNTPSynch() {
       delay(100);
     }  
 
-    ntpSynchedTime=timeClient.getEpochTime();
+    ntpSynchedTime=timeClient.getEpochTimeMs();
     setUnixtime(ntpSynchedTime);
     rtcOffset=rtc_time_get();
 
     SERDBG("Successfully set time to %s\n",TimeToString(ntpSynchedTime));
+
+    SERDBG("PrintTime %s\n",PrintTime());
 }
 
 
@@ -268,9 +291,10 @@ void AppendToSPIFFS() {
   long now;
   RawSensorSample rawdata[MAX_BME280_SAMPLES];
   
-  time(&now);
-  SERDBG("AppendToSPIFFS starts %s\n",TimeToString(now));
-
+  //time(&now);
+  //SERDBG("AppendToSPIFFS starts %s\n",TimeToString(now));
+  SERDBG("AppendToSPIFFS starts %s\n",PrintTime());
+  
   uint32_t *sdata=&ulp_sdata;
 
   // we need copy as fast as possible the data from RTC memory in order to save it from ULP next run (it would be overwritten).
@@ -290,6 +314,13 @@ void AppendToSPIFFS() {
   SPIFFS.begin(false);        // fs init has already been done in the beginning of the setup function, we can't wait for format. Even without format, call is slow, between 200-300 ms are needed.
   File f=SPIFFS.open("/SensorData.bin","a+");
 
+  // checks on file size must be a multiple of sizeof(SensorSample)
+  /*int len=f.position();
+  if (len%sizeof(SensorSample)!=0) {
+      f.truncate(1000);
+  }
+  */
+  
   bme=new BME280(dig);
   SensorSample *data=new SensorSample();
 
@@ -299,7 +330,7 @@ void AppendToSPIFFS() {
   // it takes around ms to write 180 samples without SERDBG
   for (int i=0;i<MAX_BME280_SAMPLES;i++) {
     //data->timestamp=(ntpSynchedTime+get_rtc_time_us(rawdata[i].rawTimestamp-rtcOffset)/1000000);
-    data->timestamp=(ntpSynchedTime+rtc_time_slowclk_to_us(rawdata[i].rawTimestamp-rtcOffset,calTicks)/1000000);
+    data->timestamp=(ntpSynchedTime+rtc_time_slowclk_to_us(rawdata[i].rawTimestamp-rtcOffset,calTicks)/1000);
     data->temperature=bme->CalculateTemperatureFloat(rawdata[i].rawTemperature);
     data->pressure=bme->CalculatePressureFloat(rawdata[i].rawPressure);
     data->humidity=bme->CalculateHumidityFloat(rawdata[i].rawHumidity);
@@ -324,8 +355,9 @@ void AppendToSPIFFS() {
 
   SPIFFS.end();
 
-  time(&now);
-  SERDBG("AppendToSPIFFS ends %s\n",TimeToString(now));
+  //time(&now);
+  //SERDBG("AppendToSPIFFS ends %s\n",TimeToString(now));
+  SERDBG("AppendToSPIFFS ends %s\n",PrintTime());
 }
 
 
@@ -357,21 +389,22 @@ void setup() {
         for (int i=0;i<32;i++) 
           SERDBG("Dig[%d]=%x\n",i,dig[i]);       
 
-        //SERDBG("Clock Slow Freq Get %d, setting to 8Mhz oscillator\n",rtc_clk_slow_freq_get());
+        SERDBG("RTC Clock Slow Freq Get %d\n",rtc_clk_slow_freq_get());
         //SetRTCClockSource(RTC_SLOW_FREQ_8MD256);
         
         ConnectWifi();
         DoNTPSynch();
-        DisconnectWifi();      
+        DisconnectWifi();       
 
         // start ulp program
         init_run_ulp(ULP_SENSOR_PERIOD * 1000);
         start_ulp_program();
         ESP_ERROR_CHECK( esp_sleep_enable_ulp_wakeup() );
+        SERDBG("Before deep sleep %s\n",PrintTime());
         esp_deep_sleep_start();
     }
     else {
-        SERDBG("Deep sleep wakeup from ULP\n");
+        SERDBG("Deep sleep wakeup from ULP %s\n",PrintTime());
   
         uint32_t *sdata=&ulp_sdata;
 
@@ -416,8 +449,8 @@ void setup() {
           delete bme;
         }
         */
-        SERDBG("Entering deep sleep...\n");
         ESP_ERROR_CHECK(esp_sleep_enable_ulp_wakeup());
+        SERDBG("Entering deep sleep %s...\n",PrintTime());
         esp_deep_sleep_start();
     }
 }

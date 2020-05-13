@@ -2,7 +2,7 @@
 class SensorSample  {
 
     public:
-        long timestamp;  // long is 32 bit in ESP32
+        uint64_t timestamp;
         float temperature;
         float humidity;
         float pressure;

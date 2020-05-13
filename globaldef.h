@@ -11,9 +11,9 @@
 #define NTP_SERVER  "europe.pool.ntp.org"  // ntp server address
 
 #define SSID  "SSID"        // Wifi SSID to connect to
-#define SSID_PASSWORD "SSID password"   // Wifi SSID password
+#define SSID_PASSWORD "PASSWORD"   // Wifi SSID password
 
-#define MAX_FILESIZE  20          // maximum size in KB of samples stored in SPIFFS (depends on the amount of flash memory), after this size has reached all the samples are forwarded to MQTT server
+#define MAX_FILESIZE  2000          // maximum size in KB of samples stored in SPIFFS (depends on the amount of flash memory), after this size has reached all the samples are forwarded to MQTT server
 
 #define MQTT_SERVER ""            // MQTT Server
 #define MQTT_PORT   3389          // MQTT port
